@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>基于GOJS封装的流程图设计（展示）工具类</title>
+<meta name="description" content="" />
+<!-- Copyright 1998-2016 by Northwoods Software Corporation. -->
+<meta charset="UTF-8">
+    <script src="http://libs.baidu.com/jquery/1.9.1/jquery.min.js"></script>
+    <script src="./js/peg-0.10.0.min.js"></script>
+    <script src="./js/go.js"></script>
+    <script src="./js/demo.js"></script>
+</head>
+<body>
+<div id="sample" style="width:80%;margin: 0 auto">
+  <div style="width:80%; white-space:nowrap; float: left;">
+    <!--  控件 -->
+    <span style="display: inline-block; vertical-align: top; padding: 5px; width:110px">
+      <div id="myPaletteDiv" style="border: solid 1px black; height: 850px"></div>
+    </span>
+
+    <!--  设计面板 -->
+    <span style="display: inline-block; vertical-align: top; padding: 5px; width:85%">
+      <div id="myFlowDesignerDiv" style="border: solid 1px black; height: 850px"></div>
+    </span>
+  </div>
+
+  <div>
+    <div>
+      <button id="btnSave" onclick="saveDesigner()">伪代码转流程图</button>
+    </div>
+    <textarea id="mySavedModel" style="width:19%;height:500px; float: left; display: none;">
+{"class":"go.GraphLinksModel","modelData":{"position":"-5 -5"},"nodeDataArray":[{"key":0,"text":"开始","figure":"Circle","fill":"#4fba4f","stepType":1,"loc":"500 100"},{"key":1,"text":"对1","remark":"","loc":"350 210"},{"key":2,"text":"对2","remark":"","loc":"350 310"},{"key":3,"text":"第一个判断","remark":"","loc":"350 510","figure":"Diamond"},{"key":4,"text":"对3","remark":"","loc":"350 580"},{"key":5,"text":"第一个判断end","remark":"","loc":"350 680"},{"key":6,"text":"对4","remark":"","loc":"350 780"},{"key":7,"text":"错1","remark":"","loc":"650 210"},{"key":8,"text":"错2","remark":"","loc":"650 310"},{"key":9,"text":"错3","remark":"","loc":"650 410"},{"key":10,"text":"错4","remark":"","loc":"650 510"},{"key":11,"text":"第一个判断end","remark":"","loc":"500 880"},{"key":12,"text":"结束","figure":"Circle","fill":"#CE0620","stepType":4,"loc":"500 980"}],"linkDataArray":[{"from":0,"to":1,"text":"第一个判断"},{"from":1,"to":2},{"from":2,"to":3},{"from":3,"to":4},{"from":4,"to":5},{"from":5,"to":6},{"from":0,"to":7,"text":"第二个判断"},{"from":7,"to":8},{"from":8,"to":9},{"from":9,"to":10},{"from":6,"to":11},{"from":10,"to":11},{"from":11,"to":12}]}
+    </textarea>
+    <textarea id="weicode" style="width:19%;height:500px; float: left;">
+[开始]
+if([第一个判断]){
+  [对1]
+  [对2]
+  if([第一个判断]){
+  [对3]
+}
+  [对4]
+}else([第二个判断]){
+  [错1]
+  [错2]
+  [错3]
+  [错4]
+}
+[结束]
+    </textarea>
+  </div>
+
+  <br/>
+ 
+
+</div>
+</body>
+<script type="text/javascript">
+    var areaFlow = document.getElementById('mySavedModel');
+
+var GO = go.GraphObject.make;
+var _this = {};
+var _designer = {};
+var _jsonNewStep = { key: guid(), text: "新步骤", remark: '' };
+var _jsonNewJudge = { key: guid(), text: "条件", remark: '', figure: "Diamond",  stepType: 3 };
+
+
+/**
+ * 生成GUID
+ * @returns {string}
+ */
+function guid() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
+/**
+ * 步骤图的样式模板
+ * @returns {*}
+ */
+function makeNodeTemplate(){
+    return GO(go.Node, "Spot",
+        { locationSpot: go.Spot.Center },
+        new go.Binding("location", "loc", go.Point.parse).makeTwoWay(go.Point.stringify),
+        { selectable: true, selectionAdornmentTemplate: makeNodeSelectionAdornmentTemplate() },
+        new go.Binding("angle").makeTwoWay(),
+        // the main object is a Panel that surrounds a TextBlock with a Shape
+        GO(go.Panel, "Auto",
+            { name: "PANEL" },
+            new go.Binding("desiredSize", "size", go.Size.parse).makeTwoWay(go.Size.stringify),
+            GO(go.Shape, "RoundedRectangle", // default figure
+                {
+                    portId: "", // the default port: if no spot on link data, use closest side
+                    fromLinkable: true,
+                    toLinkable: true,
+                    cursor: "pointer",
+                    fill: "#7e7e7f", // 默认背景色
+                    strokeWidth: 1,
+                    stroke: "#DDDDDD"
+                },
+                new go.Binding("figure"),
+                new go.Binding("fill")),
+            GO(go.TextBlock,
+                {
+                    font: "bold 11pt Helvetica, Arial, sans-serif",
+                    margin: 8,
+                    maxSize: new go.Size(160, NaN),
+                    wrap: go.TextBlock.WrapFit,
+                    editable: true,
+                    stroke: "white"
+                },
+                new go.Binding("text").makeTwoWay()), // the label shows the node data's text
+            {
+                toolTip:// this tooltip Adornment is shared by all nodes
+                    GO(go.Adornment, "Auto",
+                        GO(go.Shape, { fill: "#FFFFCC" }),
+                        GO(go.TextBlock, { margin: 4 })
+                    ),
+                // 绑定上下文菜单
+                contextMenu: makePartContextMenu()
+            }
+        ),
+        // 4个连接点
+        makeNodePort("T", go.Spot.Top, false, true),
+        makeNodePort("L", go.Spot.Left, true, true),
+        makeNodePort("R", go.Spot.Right, true, true),
+        makeNodePort("B", go.Spot.Bottom, true, false),
+        {
+            mouseEnter: function (e, node) { showNodePort(node, true); },
+            mouseLeave: function (e, node) { showNodePort(node, false); }
+        }
+    );
+}
+/**
+ * 定义连接线的样式模板
+ * @returns {*}
+ */
+function makeLinkTemplate(){
+    return GO(go.Link, // the whole link panel
+        new go.Binding("fromSpot", "fromSpot", go.Spot.parse),
+        new go.Binding("toSpot", "toSpot", go.Spot.parse),
+        { selectable: true, selectionAdornmentTemplate: makeLinkSelectionAdornmentTemplate() },
+        { relinkableFrom: true, relinkableTo: true, reshapable: true },
+        {
+            routing: go.Link.AvoidsNodes,
+            curve: go.Link.JumpOver,
+            corner: 5,
+            toShortLength: 4
+        },
+        GO(go.Shape, // 线条
+            { stroke: "black" }),
+        GO(go.Shape, // 箭头
+            { toArrow: "standard", stroke: null }),
+        GO(go.Panel, "Auto",
+            GO(go.Shape, // 标签背景色
+                {
+                    fill: null,
+                    stroke: null
+                }, new go.Binding("fill", "pFill")),
+            GO(go.TextBlock, // 标签文本
+                {
+                    textAlign: "center",
+                    font: "10pt helvetica, arial, sans-serif",
+                    stroke: "#555555",
+                    margin: 4
+                },
+                new go.Binding("text", "text")), // the label shows the node data's text
+            {
+                toolTip:// this tooltip Adornment is shared by all nodes
+                    GO(go.Adornment, "Auto",
+                        GO(go.Shape, { fill: "#FFFFCC" }),
+                        GO(go.TextBlock, { margin: 4 })
+                    ),
+                // this context menu Adornment is shared by all nodes
+                contextMenu: makePartContextMenu()
+            }
+        )
+    );
+};
+/**
+ * 右键菜单
+ * @returns {*}
+ */
+function makePartContextMenu(){
+    return GO(go.Adornment, "Vertical",
+        makeMenuItem("编辑",
+            function(e, obj) { // OBJ is this Button
+                var contextmenu = obj.part; // the Button is in the context menu Adornment
+                var part = contextmenu.adornedPart; // the adornedPart is the Part that the context menu adorns
+                // now can do something with PART, or with its data, or with the Adornment (the context menu)
+                showEditNode(part);
+            }),
+        makeMenuItem("剪切",
+            function(e, obj) { e.diagram.commandHandler.cutSelection(); },
+            function(o) { return o.diagram.commandHandler.canCutSelection(); }),
+        makeMenuItem("复制",
+            function(e, obj) { e.diagram.commandHandler.copySelection(); },
+            function(o) { return o.diagram.commandHandler.canCopySelection(); }),
+        makeMenuItem("删除",
+            function(e, obj) { e.diagram.commandHandler.deleteSelection(); },
+            function(o) { return o.diagram.commandHandler.canDeleteSelection(); })
+    );
+};
+/**
+ * 选中节点的样式
+ * @returns {*}
+ */
+function makeNodeSelectionAdornmentTemplate(){
+    return GO(go.Adornment, "Auto",
+        GO(go.Shape, { fill: null, stroke: "deepskyblue", strokeWidth: 1.5, strokeDashArray: [4, 2] }),
+        GO(go.Placeholder)
+    );
+}
+/**
+ * 生成右键菜单项
+ * @param text
+ * @param action
+ * @param visiblePredicate
+ * @returns {*}
+ */
+function makeMenuItem(text, action, visiblePredicate) {
+    return GO("ContextMenuButton",
+        GO(go.TextBlock, text, {
+            margin: 5,
+            textAlign: "left",
+            stroke: "#555555"
+        }),
+        { click: action },
+        // don't bother with binding GraphObject.visible if there's no predicate
+        visiblePredicate ? new go.Binding("visible", "", visiblePredicate).ofObject() : {});
+};
+/**
+ * 创建连接点
+ * @param name
+ * @param spot
+ * @param output
+ * @param input
+ * @returns {*}
+ */
+function makeNodePort(name, spot, output, input) {
+    // the port is basically just a small transparent square
+    return GO(go.Shape, "Circle",
+        {
+            fill: null, // not seen, by default; set to a translucent gray by showSmallPorts, defined below
+            stroke: null,
+            desiredSize: new go.Size(7, 7),
+            alignment: spot, // align the port on the main Shape
+            alignmentFocus: spot, // just inside the Shape
+            portId: name, // declare this object to be a "port"
+            fromSpot: spot,
+            toSpot: spot, // declare where links may connect at this port
+            fromLinkable: output,
+            toLinkable: input, // declare whether the user may draw links to/from here
+            cursor: "pointer" // show a different cursor to indicate potential link point
+        });
+};
+/**
+ * 是否显示步骤的连接点
+ * @param node
+ * @param show
+ */
+function showNodePort(node, show) {
+    node.ports.each(function (port) {
+        if (port.portId !== "") { // don't change the default port, which is the big shape
+            port.fill = show ? "rgba(255,0,0,.5)" : null;
+        }
+    });
+};
+/**
+ * 连接线的选中样式
+ * @returns {*}
+ */
+function makeLinkSelectionAdornmentTemplate(){
+    return GO(go.Adornment, "Link",
+        GO(go.Shape,
+            // isPanelMain declares that this Shape shares the Link.geometry
+            { isPanelMain: true, fill: null, stroke: "deepskyblue", strokeWidth: 0 }) // use selection object's strokeWidth
+    );
+};
+/**
+ * 更改所有连线中间的文本背景色
+ */
+function setLinkTextBg() {
+    designer.links.each(function (link) {
+        designer.startTransaction("vacate");
+        if (link.data.text) {
+            designer.model.setDataProperty(link.data, "pFill", window.go.GraphObject.make(go.Brush, "Radial", {
+                0: "rgb(240, 240, 240)",
+                0.3: "rgb(240, 240, 240)",
+                1: "rgba(240, 240, 240, 0)"
+            }));
+        }
+        designer.commitTransaction("vacate");
+    });
+};
+
+var designer = GO(go.Diagram, 'myFlowDesignerDiv', // must name or refer to the DIV HTML element
+        {  grid: GO(go.Panel, "Grid",
+                GO(go.Shape, "LineH", { stroke: "lightgray", strokeWidth: 0.5 }),
+                GO(go.Shape, "LineH", { stroke: "gray", strokeWidth: 0.5, interval: 10 }),
+                GO(go.Shape, "LineV", { stroke: "lightgray", strokeWidth: 0.5 }),
+                GO(go.Shape, "LineV", { stroke: "gray", strokeWidth: 0.5, interval: 10 })
+            ),
+            allowDrop: true, // must be true to accept drops from the Palette
+            allowTextEdit: false,
+            "clickCreatingTool.archetypeNodeData": _jsonNewStep, // 双击创建新步骤
+            "draggingTool.dragsLink": true,
+            "draggingTool.isGridSnapEnabled": true,
+            "linkingTool.isUnconnectedLinkValid": true,
+            "linkingTool.portGravity": 20,
+            "relinkingTool.isUnconnectedLinkValid": true,
+            "relinkingTool.portGravity": 20,
+            "relinkingTool.fromHandleArchetype":
+                GO(go.Shape, "Diamond", { segmentIndex: 0, cursor: "pointer", desiredSize: new go.Size(8, 8), fill: "tomato", stroke: "darkred" }),
+            "relinkingTool.toHandleArchetype":
+                GO(go.Shape, "Diamond", { segmentIndex: -1, cursor: "pointer", desiredSize: new go.Size(8, 8), fill: "darkred", stroke: "tomato" }),
+            "linkReshapingTool.handleArchetype":
+                GO(go.Shape, "Diamond", { desiredSize: new go.Size(7, 7), fill: "lightblue", stroke: "deepskyblue" }),
+            "undoManager.isEnabled": true
+ });
+
+
+
+// 流程步骤的样式模板
+designer.nodeTemplate = makeNodeTemplate();
+
+// 流程连接线的样式模板
+designer.linkTemplate = makeLinkTemplate();
+
+
+/**
+* 初始化图例面板
+* @returns {*}
+*/
+
+var myPalette =GO(go.Palette, 'myPaletteDiv', // 必须是DIV元素
+{
+    maxSelectionCount: 3,
+    nodeTemplateMap: designer.nodeTemplateMap, // 跟设计图共同一套样式模板
+    model: new go.GraphLinksModel([
+        { key: guid(), text: "开始", figure: "Circle", fill: "#4fba4f", stepType: 1 },
+        _jsonNewStep,
+        _jsonNewJudge,
+        { key: guid(), text: "结束", figure: "Circle", fill: "#CE0620", stepType: 4 }
+    ])
+});
+
+/**
+ * 在设计面板中显示流程图
+ * @param flowData  流程图json数据
+ */
+var displayFlow = function (flowData) {
+
+    if(!flowData) return;
+
+    designer.model = go.Model.fromJson(flowData);
+
+    var pos = designer.model.modelData.position;
+    if (pos) {designer.initialPosition = go.Point.parse(pos)};
+
+    // 更改所有连线中间的文本背景色
+    setLinkTextBg();
+};
+displayFlow(areaFlow.value)
+
+
+ 
+/**
+* 保存设计图中的数据
+*/
+var saveDesigner = function(){
+// areaFlow.value = designer.model.toJson();
+var wei = document.getElementById('weicode');
+var aaa=start(wei.value)
+displayFlow(aaa)
+console.log(aaa)
+
+
+};
+
+
+
+
+</script>
+</html>
